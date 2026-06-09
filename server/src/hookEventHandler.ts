@@ -78,6 +78,16 @@ export class HookEventHandler {
     }
   }
 
+  /** Update the active provider. */
+  setProvider(provider: HookProvider): void {
+    this.provider = provider;
+  }
+
+  /** Get the active provider. */
+  getProvider(): HookProvider {
+    return this.provider;
+  }
+
   /** Merged set of tool names that spawn subagents (teammates + within-turn subagents
    *  when a team provider is attached, or the base HookProvider set otherwise). */
   private getSubagentToolSet(): ReadonlySet<string> {

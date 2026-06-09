@@ -41,6 +41,158 @@ export function formatToolStatus(toolName: string, input: Record<string, unknown
   return hookProvider?.formatToolStatus(toolName, input) ?? `Using ${toolName}`;
 }
 
+function cleanValue(val: unknown): any {
+  if (typeof val === 'string') {
+    if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) {
+      return val.slice(1, -1);
+    }
+  }
+  return val;
+}
+
+function cleanArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(args)) {
+    result[key] = cleanValue(args[key]);
+  }
+  return result;
+}
+
+function matchesToolType(toolName: string, recordType: string): boolean {
+  const upperName = toolName.toUpperCase();
+  if (upperName === recordType) return true;
+  if (recordType === 'LIST_DIRECTORY' && toolName === 'list_dir') return true;
+  if (recordType === 'GREP_SEARCH' && toolName === 'grep_search') return true;
+  if (recordType === 'VIEW_FILE' && toolName === 'view_file') return true;
+  if (
+    recordType === 'CODE_ACTION' &&
+    (toolName === 'replace_file_content' ||
+      toolName === 'multi_replace_file_content' ||
+      toolName === 'write_to_file')
+  ) {
+    return true;
+  }
+  if (recordType === 'RUN_COMMAND' && toolName === 'run_command') return true;
+  return false;
+}
+
+function processAntigravityRecord(
+  agentId: number,
+  record: any,
+  agent: AgentState,
+  agents: AgentStateStore,
+  waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
+  permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
+): void {
+  const type = record.type;
+
+  if (type === 'USER_INPUT') {
+    cancelWaitingTimer(agentId, waitingTimers);
+    clearAgentActivity(agent, agentId, agents, permissionTimers);
+    agent.hadToolsInTurn = false;
+    agent.isWaiting = false;
+    agents.broadcast({ type: 'agentStatus', id: agentId, status: 'active' });
+  } else if (type === 'PLANNER_RESPONSE') {
+    const toolCalls = record.tool_calls;
+    if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+      cancelWaitingTimer(agentId, waitingTimers);
+      agent.isWaiting = false;
+      agent.hadToolsInTurn = true;
+      agents.broadcast({ type: 'agentStatus', id: agentId, status: 'active' });
+
+      for (const tc of toolCalls) {
+        const toolName = tc.name;
+        const toolId = `${toolName}-${record.step_index}`;
+        const args = tc.args ? cleanArgs(tc.args) : {};
+        const statusText = formatToolStatus(toolName, args);
+
+        console.log(
+          `[Pixel Agents] Antigravity JSONL: Agent ${agentId} - tool start: ${toolId} ${statusText}`,
+        );
+
+        agent.activeToolIds.add(toolId);
+        agent.activeToolStatuses.set(toolId, statusText);
+        agent.activeToolNames.set(toolId, toolName);
+
+        const isSubagentSpawn = isSubagentTool(toolName);
+        const runInBackground = isSubagentSpawn && args.run_in_background === true;
+
+        agents.broadcast({
+          type: 'agentToolStart',
+          id: agentId,
+          toolId,
+          status: statusText,
+          toolName,
+          permissionActive: agent.permissionSent,
+          runInBackground,
+        });
+      }
+    } else {
+      cancelWaitingTimer(agentId, waitingTimers);
+      cancelPermissionTimer(agentId, permissionTimers);
+
+      if (agent.activeToolIds.size > 0) {
+        agent.activeToolIds.clear();
+        agent.activeToolStatuses.clear();
+        agent.activeToolNames.clear();
+        agents.broadcast({ type: 'agentToolsClear', id: agentId });
+      }
+
+      agent.isWaiting = true;
+      agent.permissionSent = false;
+      agent.hadToolsInTurn = false;
+      agents.broadcast({
+        type: 'agentStatus',
+        id: agentId,
+        status: 'waiting',
+      });
+    }
+  } else if (type !== 'CONVERSATION_HISTORY') {
+    let completedToolId: string | null = null;
+    for (const toolId of agent.activeToolIds) {
+      const toolName = agent.activeToolNames.get(toolId) || '';
+      if (matchesToolType(toolName, type)) {
+        completedToolId = toolId;
+        break;
+      }
+    }
+
+    if (!completedToolId && agent.activeToolIds.size > 0) {
+      completedToolId = agent.activeToolIds.values().next().value ?? null;
+    }
+
+    if (completedToolId) {
+      const toolName = agent.activeToolNames.get(completedToolId) || '';
+      console.log(
+        `[Pixel Agents] Antigravity JSONL: Agent ${agentId} - tool done: ${completedToolId}`,
+      );
+
+      if (isSubagentTool(toolName)) {
+        agent.activeSubagentToolIds.delete(completedToolId);
+        agent.activeSubagentToolNames.delete(completedToolId);
+        agents.broadcast({
+          type: 'subagentClear',
+          id: agentId,
+          parentToolId: completedToolId,
+        });
+      }
+
+      agent.activeToolIds.delete(completedToolId);
+      agent.activeToolStatuses.delete(completedToolId);
+      agent.activeToolNames.delete(completedToolId);
+
+      const toolId = completedToolId;
+      setTimeout(() => {
+        agents.broadcast({
+          type: 'agentToolDone',
+          id: agentId,
+          toolId,
+        });
+      }, TOOL_DONE_DELAY_MS);
+    }
+  }
+}
+
 export function processTranscriptLine(
   agentId: number,
   line: string,
@@ -54,6 +206,11 @@ export function processTranscriptLine(
   agent.linesProcessed++;
   try {
     const record = JSON.parse(line);
+
+    if (record.step_index !== undefined) {
+      processAntigravityRecord(agentId, record, agent, agents, waitingTimers, permissionTimers);
+      return;
+    }
 
     // -- Agent Teams: extract team metadata via the active provider --
     // The provider reads its CLI's own field names (Claude: record.teamName + record.agentName).
@@ -82,16 +239,18 @@ export function processTranscriptLine(
       });
     }
 
-    // -- Token usage extraction from assistant records --
-    const usage = record.message?.usage as
-      | { input_tokens?: number; output_tokens?: number }
+    // -- Token usage extraction from assistant/gemini records --
+    const usage = (record.message?.usage || record.tokens) as
+      | { input_tokens?: number; output_tokens?: number; input?: number; output?: number }
       | undefined;
     if (usage) {
-      if (typeof usage.input_tokens === 'number') {
-        agent.inputTokens += usage.input_tokens;
+      const input = usage.input_tokens ?? usage.input;
+      const output = usage.output_tokens ?? usage.output;
+      if (typeof input === 'number') {
+        agent.inputTokens += input;
       }
-      if (typeof usage.output_tokens === 'number') {
-        agent.outputTokens += usage.output_tokens;
+      if (typeof output === 'number') {
+        agent.outputTokens += output;
       }
       agents.broadcast({
         type: 'agentTokenUsage',
@@ -105,16 +264,27 @@ export function processTranscriptLine(
     // Claude Code may change the JSONL structure across versions
     const assistantContent = record.message?.content ?? record.content;
 
-    if (record.type === 'assistant' && Array.isArray(assistantContent)) {
-      const blocks = assistantContent as Array<{
-        type: string;
-        id?: string;
-        name?: string;
-        input?: Record<string, unknown>;
-      }>;
-      const hasToolUse = blocks.some((b) => b.type === 'tool_use');
+    // Support Gemini record type
+    if (
+      record.type === 'gemini' ||
+      (record.type === 'assistant' && Array.isArray(assistantContent))
+    ) {
+      const isGemini = record.type === 'gemini';
+      const blocks = isGemini
+        ? (record.toolCalls || []).map((tc: any) => ({
+            type: 'tool_use',
+            id: tc.id,
+            name: tc.name,
+            input: tc.args,
+          }))
+        : assistantContent;
 
-      if (hasToolUse) {
+      const hasToolUse = isGemini
+        ? record.toolCalls?.length > 0
+        : blocks.some((b: any) => b.type === 'tool_use');
+      const isThinking = isGemini && (record.thoughts?.length > 0 || record.content?.length > 0);
+
+      if (hasToolUse || isThinking) {
         cancelWaitingTimer(agentId, waitingTimers);
         agent.isWaiting = false;
         agent.hadToolsInTurn = true;
@@ -176,7 +346,7 @@ export function processTranscriptLine(
         if (hasNonExemptTool && !agent.hookDelivered && !agent.leadAgentId) {
           startPermissionTimer(agentId, agents, permissionTimers, exemptTools());
         }
-      } else if (blocks.some((b) => b.type === 'text') && !agent.hadToolsInTurn) {
+      } else if (blocks.some((b: any) => b.type === 'text') && !agent.hadToolsInTurn) {
         // Text-only response in a turn that hasn't used any tools.
         // turn_duration handles tool-using turns reliably but is never
         // emitted for text-only turns, so we use a silence-based timer:
@@ -196,6 +366,30 @@ export function processTranscriptLine(
       console.warn(
         `[Pixel Agents] Agent ${agentId}: assistant record has no content. Keys: ${Object.keys(record).join(', ')}`,
       );
+    } else if (record.type === 'gemini' && record.status === 'success') {
+      // Gemini turn ended successfully
+      cancelWaitingTimer(agentId, waitingTimers);
+      cancelPermissionTimer(agentId, permissionTimers);
+
+      if (agent.activeToolIds.size > 0) {
+        agent.activeToolIds.clear();
+        agent.activeToolStatuses.clear();
+        agent.activeToolNames.clear();
+        if (!agent.hookDelivered) {
+          agents.broadcast({ type: 'agentToolsClear', id: agentId });
+        }
+      }
+
+      agent.isWaiting = true;
+      agent.permissionSent = false;
+      agent.hadToolsInTurn = false;
+      if (!agent.hookDelivered) {
+        agents.broadcast({
+          type: 'agentStatus',
+          id: agentId,
+          status: 'waiting',
+        });
+      }
     } else if (record.type === 'progress') {
       processProgressRecord(agentId, record, agents, waitingTimers, permissionTimers);
     } else if (record.type === 'user') {
@@ -260,12 +454,16 @@ export function processTranscriptLine(
           cancelWaitingTimer(agentId, waitingTimers);
           clearAgentActivity(agent, agentId, agents, permissionTimers);
           agent.hadToolsInTurn = false;
+          agent.isWaiting = false;
+          agents.broadcast({ type: 'agentStatus', id: agentId, status: 'active' });
         }
       } else if (typeof content === 'string' && content.trim()) {
         // New user text prompt — new turn starting
         cancelWaitingTimer(agentId, waitingTimers);
         clearAgentActivity(agent, agentId, agents, permissionTimers);
         agent.hadToolsInTurn = false;
+        agent.isWaiting = false;
+        agents.broadcast({ type: 'agentStatus', id: agentId, status: 'active' });
       }
     } else if (record.type === 'queue-operation' && record.operation === 'enqueue') {
       // Background agent completed — parse tool-use-id from XML content

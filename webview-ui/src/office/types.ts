@@ -163,9 +163,11 @@ export interface Character {
   /** Assigned seat uid, or null if no seat */
   seatId: string | null;
   /** Active speech bubble type, or null if none showing */
-  bubbleType: 'permission' | 'waiting' | null;
-  /** Countdown timer for bubble (waiting: 2→0, permission: unused) */
+  bubbleType: 'permission' | 'waiting' | 'petTalk' | null;
+  /** Countdown timer for bubble (waiting: 2→0, permission: unused, petTalk: counts down) */
   bubbleTimer: number;
+  /** Text shown in pet talk bubble (e.g. "Meowww") */
+  petTalkText: string;
   /** Timer to stay seated while inactive after seat reassignment (counts down to 0) */
   seatTimer: number;
   /** Whether this character represents a sub-agent (spawned by Task tool) */
@@ -196,4 +198,8 @@ export interface Character {
   inputTokens: number;
   /** Cumulative output tokens consumed */
   outputTokens: number;
+  /** Whether this character represents a wandering pet (ignores seats) */
+  isPet?: boolean;
+  /** Custom name set by the user */
+  customName?: string;
 }

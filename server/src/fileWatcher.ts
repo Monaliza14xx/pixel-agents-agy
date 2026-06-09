@@ -71,6 +71,25 @@ export function setTerminalAdapter(adapter: ITerminalAdapter): void {
  *  captures the store and timer Maps, so only the agent ID is needed. */
 let agentRemovalCallback: ((id: number) => void) | null = null;
 
+/** Check if a file matches any known file paths or patterns. */
+function isKnownFile(file: string, knownFiles: Set<string>): boolean {
+  if (knownFiles.has(file)) return true;
+  // Support patterns (e.g. session-*UUID.jsonl from Gemini)
+  for (const entry of knownFiles) {
+    if (entry.includes('*')) {
+      const escaped = entry.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      const regex = new RegExp(`^${escaped}$`);
+      if (regex.test(file)) return true;
+    }
+  }
+  return false;
+}
+
+/** Check if hook-based event delivery is active. */
+function areHooksActive(hooksEnabledRef?: { current: boolean }): boolean {
+  return !!(hooksEnabledRef?.current && hookProvider?.id === 'claude');
+}
+
 /** Register the agent removal callback. Called by PixelAgentsViewProvider. */
 export function setAgentRemovalCallback(cb: typeof agentRemovalCallback): void {
   agentRemovalCallback = cb;
@@ -91,21 +110,23 @@ let clearDetectionDeps: {
 
 export function startFileWatching(
   agentId: number,
-  _filePath: string,
+  filePath: string,
   agents: AgentStateStore,
-  _fileWatchers: Map<number, fs.FSWatcher>,
+  fileWatchers: Map<number, fs.FSWatcher>,
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
 ): void {
-  // Single polling approach: reliable on all platforms (macOS, Linux, WSL2, Windows).
-  // Previously used triple-redundant fs.watch + fs.watchFile + setInterval, but
-  // fs.watch is unreliable on macOS/WSL2 and the redundancy created 3 timers per
-  // agent doing synchronous I/O. The manual poll at 500ms is fast enough for a
-  // pixel art visualization and works everywhere.
-  const interval = setInterval(() => {
+  // Dual polling + watching approach for maximum responsiveness and reliability.
+  // We use fs.watch as a performance hint: when it fires, we poll immediately.
+  // We keep the setInterval loop at 100ms as a robust fallback for platforms
+  // where fs.watch is unreliable (macOS, WSL2, certain network mounts).
+
+  const poll = () => {
     if (!agents.has(agentId)) {
       clearInterval(interval);
+      fileWatchers.get(agentId)?.close();
+      fileWatchers.delete(agentId);
       return;
     }
     const agent = agents.get(agentId)!;
@@ -137,7 +158,7 @@ export function startFileWatching(
         // The main scanner does NOT add non-adopted files to knownJsonlFiles,
         // so /clear files remain findable here.
         for (const file of dirFiles) {
-          if (deps.knownJsonlFiles.has(file)) continue;
+          if (isKnownFile(file, deps.knownJsonlFiles)) continue;
           if (dismissalTracker!.isDismissed(file)) continue;
           let tracked = false;
           for (const a of agents.values()) {
@@ -148,8 +169,7 @@ export function startFileWatching(
           }
           if (tracked) continue;
           // Content-based /clear detection: only claim files with the /clear command
-          // record. Dropped "last-prompt" check because it also appears in --resume
-          // sessions. "/clear</command-name>" is specific to /clear (~1.5KB in file).
+          // record. "/clear</command-name>" is specific to /clear (~1.5KB in file).
           try {
             const buf = Buffer.alloc(8192);
             const fd = fs.openSync(file, 'r');
@@ -180,8 +200,23 @@ export function startFileWatching(
         /* ignore dir read errors */
       }
     }
-  }, FILE_WATCHER_POLL_INTERVAL_MS);
+  };
+
+  const interval = setInterval(poll, FILE_WATCHER_POLL_INTERVAL_MS);
   pollingTimers.set(agentId, interval);
+
+  try {
+    const watcher = fs.watch(filePath, (event) => {
+      if (event === 'change') {
+        poll();
+      }
+    });
+    fileWatchers.set(agentId, watcher);
+  } catch (e) {
+    // fs.watch may fail on certain environments or for missing files;
+    // the setInterval loop above remains as the primary reliable mechanism.
+    if (debug) console.log(`[Pixel Agents] Watcher: Agent ${agentId} - fs.watch failed: ${e}`);
+  }
 }
 
 export function readNewLines(
@@ -193,7 +228,29 @@ export function readNewLines(
   const agent = agents.get(agentId);
   if (!agent) return;
   try {
-    const stat = fs.statSync(agent.jsonlFile);
+    let filePath = agent.jsonlFile;
+    if (filePath.includes('*')) {
+      const dir = path.dirname(filePath);
+      const pattern = path.basename(filePath);
+      if (fs.existsSync(dir)) {
+        const files = fs.readdirSync(dir);
+        const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+        const regex = new RegExp(`^${escaped}$`);
+        const matched = files.find((f) => regex.test(f));
+        if (matched) {
+          const concretePath = path.join(dir, matched);
+          if (debug) {
+            console.log(
+              `[Pixel Agents] Watcher: Agent ${agentId} - resolved wildcard path ${filePath} -> ${concretePath}`,
+            );
+          }
+          agent.jsonlFile = concretePath;
+          filePath = concretePath;
+        }
+      }
+    }
+
+    const stat = fs.statSync(filePath);
     if (stat.size <= agent.fileOffset) return;
 
     // Cap single read at 64KB to prevent blocking on massive JSONL dumps.
@@ -332,7 +389,7 @@ export function ensureProjectScan(
     }
 
     // When hooks are active, SessionStart handles new file detection.
-    if (hooksEnabledRef?.current) return;
+    if (areHooksActive(hooksEnabledRef)) return;
 
     for (const dir of trackedProjectDirs) {
       scanForNewJsonlFiles(
@@ -367,16 +424,18 @@ export function scanForNewJsonlFiles(
 ): void {
   let files: string[];
   try {
+    const antigravityLogDir = path.join(projectDir, '.system_generated', 'logs');
+    const scanDir = fs.existsSync(antigravityLogDir) ? antigravityLogDir : projectDir;
     files = fs
-      .readdirSync(projectDir)
+      .readdirSync(scanDir)
       .filter((f) => f.endsWith('.jsonl'))
-      .map((f) => path.join(projectDir, f));
+      .map((f) => path.join(scanDir, f));
   } catch {
     return;
   }
 
   for (const file of files) {
-    if (knownJsonlFiles.has(file)) continue;
+    if (isKnownFile(file, knownJsonlFiles)) continue;
 
     // Main scanner does NOT do /clear detection. /clear is handled per-agent
     // in startFileWatching's poll loop (500ms, requires CURRENT terminal focus).
@@ -481,7 +540,14 @@ function adoptTerminalForFile(
   onAgentCreated?: (agent: AgentState) => void,
 ): void {
   const id = nextAgentIdRef.current++;
-  const sessionId = path.basename(jsonlFile, '.jsonl');
+  let sessionId = path.basename(jsonlFile, '.jsonl');
+  if (sessionId === 'transcript') {
+    const normalized = jsonlFile.replace(/\\/g, '/');
+    const match = normalized.match(/\/brain\/([^/]+)/);
+    if (match && match[1]) {
+      sessionId = match[1];
+    }
+  }
   // Skip to end of file -- adopted terminals show live activity only, not replay history
   let fileOffset = 0;
   try {
@@ -824,7 +890,7 @@ export function adoptExternalSessionFromHook(
 
     knownJsonlFiles.add(transcriptPath);
     const projectDir = path.dirname(transcriptPath);
-    const folderName = folderNameFromProjectDir(path.basename(projectDir));
+    const folderName = folderNameFromProjectDir(path.basename(projectDir), projectDir);
 
     adoptExternalSession(
       transcriptPath,
@@ -914,9 +980,17 @@ function adoptExternalSession(
   } catch {
     /* start from beginning if stat fails */
   }
+  let sessionId = path.basename(jsonlFile, '.jsonl');
+  if (sessionId === 'transcript') {
+    const normalized = jsonlFile.replace(/\\/g, '/');
+    const match = normalized.match(/\/brain\/([^/]+)/);
+    if (match && match[1]) {
+      sessionId = match[1];
+    }
+  }
   const agent: AgentState = {
     id,
-    sessionId: path.basename(jsonlFile, '.jsonl'),
+    sessionId,
     terminalRef: undefined,
     isExternal: true,
     projectDir,
@@ -982,7 +1056,7 @@ export function startExternalSessionScanning(
     // When hooks are active, SessionStart handles workspace session detection.
     // Only skip workspace scanning; global scanning (Watch All) still needed
     // because hooks can't detect already-running sessions from other projects.
-    if (!hooksEnabledRef?.current) {
+    if (!areHooksActive(hooksEnabledRef)) {
       // Scan all tracked project dirs (heuristic fallback)
       for (const dir of trackedProjectDirs) {
         scanExternalDir(
@@ -1029,10 +1103,12 @@ export function scanExternalDir(
 ): void {
   let files: string[];
   try {
+    const antigravityLogDir = path.join(projectDir, '.system_generated', 'logs');
+    const scanDir = fs.existsSync(antigravityLogDir) ? antigravityLogDir : projectDir;
     files = fs
-      .readdirSync(projectDir)
+      .readdirSync(scanDir)
       .filter((f) => f.endsWith('.jsonl'))
-      .map((f) => path.join(projectDir, f));
+      .map((f) => path.join(scanDir, f));
   } catch {
     return;
   }
@@ -1078,7 +1154,7 @@ export function scanExternalDir(
     }
 
     // Skip files already known (seeded or adopted).
-    if (knownJsonlFiles.has(file)) continue;
+    if (isKnownFile(file, knownJsonlFiles)) continue;
 
     // Skip files permanently dismissed by /clear (never re-adopted)
     if (dismissalTracker!.isPermanentlyDismissed(file)) continue;
@@ -1145,7 +1221,20 @@ export function scanExternalDir(
 }
 
 /** Derive a readable folder name from the Claude project dir hash. */
-function folderNameFromProjectDir(dirName: string): string {
+function folderNameFromProjectDir(dirName: string, projectDir?: string): string {
+  if (projectDir) {
+    const normalizedPath = projectDir.replace(/\\/g, '/');
+    if (
+      normalizedPath.includes('/antigravity/brain/') ||
+      normalizedPath.includes('/antigravity-ide/brain/') ||
+      normalizedPath.includes('/antigravity-cli/brain/')
+    ) {
+      const match = normalizedPath.match(/\/brain\/([^/]+)/);
+      if (match && match[1]) {
+        return match[1].slice(0, 8);
+      }
+    }
+  }
   const parts = dirName.replace(/^-+/, '').split('-');
   return parts[parts.length - 1] || dirName;
 }
@@ -1185,16 +1274,18 @@ function scanGlobalProjectDirs(
 
     let files: string[];
     try {
+      const antigravityLogDir = path.join(dirPath, '.system_generated', 'logs');
+      const scanDir = fs.existsSync(antigravityLogDir) ? antigravityLogDir : dirPath;
       files = fs
-        .readdirSync(dirPath)
+        .readdirSync(scanDir)
         .filter((f) => f.endsWith('.jsonl'))
-        .map((f) => path.join(dirPath, f));
+        .map((f) => path.join(scanDir, f));
     } catch {
       continue;
     }
 
     for (const file of files) {
-      if (knownJsonlFiles.has(file)) continue;
+      if (isKnownFile(file, knownJsonlFiles)) continue;
       let tracked = false;
       for (const agent of agents.values()) {
         if (agent.jsonlFile === file) {
@@ -1212,7 +1303,7 @@ function scanGlobalProjectDirs(
         continue;
       }
 
-      const folderName = folderNameFromProjectDir(path.basename(dirPath));
+      const folderName = folderNameFromProjectDir(path.basename(dirPath), dirPath);
       knownJsonlFiles.add(file);
       console.log(
         `[Pixel Agents] Watcher: detected global session ${path.basename(file)} (${folderName})`,
@@ -1244,7 +1335,7 @@ export function startStaleExternalAgentCheck(
 ): ReturnType<typeof setInterval> {
   return setInterval(() => {
     // When hooks are active, SessionEnd handles agent cleanup.
-    if (hooksEnabledRef?.current) return;
+    if (areHooksActive(hooksEnabledRef)) return;
     const toRemove: number[] = [];
 
     for (const [id, agent] of agents) {

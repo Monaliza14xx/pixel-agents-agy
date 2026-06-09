@@ -35,3 +35,17 @@ playwright-report/
 
 # Local notes (not for commit)
 /notes/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Scratch/local scripts
+analyze_sprite.py
+assemble_sprite.py
+process_sprite.py
+process_sprite_advanced.py
+test_png.js
+test_manager.js

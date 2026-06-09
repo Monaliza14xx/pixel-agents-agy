@@ -1,3 +1,4 @@
+import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -13,12 +14,14 @@ import {
   loadExternalCharacterSprites,
   loadFloorTiles,
   loadFurnitureAssets,
+  loadPetSprites,
   loadWallTiles,
   mergeCharacterSprites,
   mergeLoadedAssets,
   sendAssetsToWebview,
   sendCharacterSpritesToWebview,
   sendFloorTilesToWebview,
+  sendPetSpritesToWebview,
   sendWallTilesToWebview,
 } from '../../server/src/assetLoader.js';
 import { readConfig, writeConfig } from '../../server/src/configPersistence.js';
@@ -29,7 +32,11 @@ import {
   watchLayoutFile,
   writeLayoutToFile,
 } from '../../server/src/layoutPersistence.js';
-import { claudeProvider, copyHookScript } from '../../server/src/providers/index.js';
+import {
+  antigravityProvider,
+  claudeProvider,
+  copyHookScript,
+} from '../../server/src/providers/index.js';
 import { PixelAgentsServer } from '../../server/src/server.js';
 import {
   getProjectDirPath,
@@ -46,6 +53,7 @@ import {
   GLOBAL_KEY_HOOKS_ENABLED,
   GLOBAL_KEY_HOOKS_INFO_SHOWN,
   GLOBAL_KEY_LAST_SEEN_VERSION,
+  GLOBAL_KEY_PROVIDER,
   GLOBAL_KEY_SOUND_ENABLED,
   GLOBAL_KEY_WATCH_ALL_SESSIONS,
   LAYOUT_REVISION_KEY,
@@ -79,6 +87,14 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
   // session, even though webviewReady fires on every panel focus.
   private autoSpawnAttempted = false;
 
+  private getActiveProvider() {
+    const defaultProvider = vscode.env.appName.toLowerCase().includes('antigravity')
+      ? 'antigravity'
+      : 'claude';
+    const providerId = this.adapter.getSetting<string>(GLOBAL_KEY_PROVIDER, defaultProvider);
+    return providerId === 'antigravity' ? antigravityProvider : claudeProvider;
+  }
+
   constructor(
     private readonly context: vscode.ExtensionContext,
     adapter: StateAdapter,
@@ -108,7 +124,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     setTerminalAdapter(new VscodeTerminalAdapter());
 
     // Create shared runtime (owns timer Maps, scanners, hook handler, dismissal tracker)
-    this.runtime = new AgentRuntime(this.store, claudeProvider);
+    this.runtime = new AgentRuntime(this.store, this.getActiveProvider());
 
     this.initServer();
   }
@@ -136,8 +152,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         const hooksEnabled = this.adapter.getSetting<boolean>(GLOBAL_KEY_HOOKS_ENABLED, true);
         this.runtime.hooksEnabled.current = hooksEnabled;
         if (hooksEnabled) {
-          void claudeProvider.installHooks(`http://127.0.0.1:${config.port}`, config.token);
-          copyHookScript(this.context.extensionPath);
+          const provider = this.getActiveProvider();
+          void provider.installHooks(`http://127.0.0.1:${config.port}`, config.token);
+          if (provider.id === 'claude') {
+            copyHookScript(this.context.extensionPath);
+          }
         }
         console.log(`[Pixel Agents] Server: ready on port ${config.port}`);
       })
@@ -152,24 +171,38 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = getWebviewContent(webviewView.webview, this.extensionUri);
 
     webviewView.webview.onDidReceiveMessage(async (message) => {
+      const provider = this.getActiveProvider();
+      console.log(
+        `[Pixel Agents] Webview message: ${message.type}, active provider: ${provider.id}`,
+      );
+
       if (message.type === 'launchAgent') {
         const prevAgentIds = new Set(this.store.keys());
-        await launchNewTerminal(
-          this.store.nextAgentId,
-          this.store.nextTerminalIndex,
-          this.store,
-          this.runtime.activeAgentId,
-          this.runtime.knownJsonlFiles,
-          this.runtime.fileWatchers,
-          this.runtime.pollingTimers,
-          this.runtime.waitingTimers,
-          this.runtime.permissionTimers,
-          this.runtime.jsonlPollTimers,
-          this.runtime.projectScanTimer,
-          () => this.store.persist(),
-          message.folderPath as string | undefined,
-          message.bypassPermissions as boolean | undefined,
-        );
+        console.log(`[Pixel Agents] Launching agent with provider: ${provider.id}`);
+        try {
+          await launchNewTerminal(
+            provider,
+            this.store.nextAgentId,
+            this.store.nextTerminalIndex,
+            this.store,
+            this.runtime.activeAgentId,
+            this.runtime.knownJsonlFiles,
+            this.runtime.fileWatchers,
+            this.runtime.pollingTimers,
+            this.runtime.waitingTimers,
+            this.runtime.permissionTimers,
+            this.runtime.jsonlPollTimers,
+            this.runtime.projectScanTimer,
+            () => this.store.persist(),
+            message.folderPath as string | undefined,
+            message.bypassPermissions as boolean | undefined,
+            undefined,
+            message.role as string | undefined,
+          );
+        } catch (err) {
+          console.error(`[Pixel Agents] Failed to launch terminal: ${err}`);
+          vscode.window.showErrorMessage(`Failed to launch agent: ${err}`);
+        }
         // Register newly created agent(s) with hook handler
         for (const [id, agent] of this.store) {
           if (!prevAgentIds.has(id)) {
@@ -179,13 +212,72 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
       } else if (message.type === 'focusAgent') {
         const agent = this.store.get(message.id);
         if (agent) {
-          if (agent.terminalRef) {
-            agent.terminalRef.show();
-          } else if (agent.leadAgentId !== undefined) {
-            // Teammate (tmux): focus the lead's terminal instead
-            const lead = this.store.get(agent.leadAgentId);
-            if (lead?.terminalRef) {
-              lead.terminalRef.show();
+          // Focus the lead agent if this is a teammate/subagent
+          const targetAgent =
+            agent.leadAgentId !== undefined ? this.store.get(agent.leadAgentId) || agent : agent;
+
+          if (targetAgent.terminalRef) {
+            targetAgent.terminalRef.show();
+          } else {
+            // Check if there is a matching terminal in the current editor window first
+            const liveTerminals = vscode.window.terminals;
+            const shortSessionId = targetAgent.sessionId ? targetAgent.sessionId.slice(0, 8) : '';
+
+            let matchedTerminal = liveTerminals.find((t) => {
+              if (targetAgent.sessionId && t.name.includes(targetAgent.sessionId)) return true;
+              if (shortSessionId && t.name.includes(shortSessionId)) return true;
+              if (targetAgent.folderName && t.name.includes(targetAgent.folderName)) return true;
+              return false;
+            });
+
+            if (!matchedTerminal) {
+              const provider = this.getActiveProvider();
+              const prefix = (provider.terminalNamePrefix || '').toLowerCase();
+              matchedTerminal = liveTerminals.find((t) => {
+                const name = t.name.toLowerCase();
+                if (prefix && name.startsWith(prefix)) return true;
+                if (name === 'antigravity' || name === 'claude') return true;
+                return false;
+              });
+            }
+
+            if (matchedTerminal) {
+              matchedTerminal.show();
+            } else if (targetAgent.isExternal) {
+              // External agent (e.g. running in Antigravity Manager or another window)
+              if (this.getActiveProvider().id === 'antigravity') {
+                if (process.platform === 'darwin') {
+                  const isIde = targetAgent.jsonlFile.includes('antigravity-ide');
+                  const isCli = targetAgent.jsonlFile.includes('antigravity-cli');
+                  const appName = isIde ? 'Antigravity IDE' : isCli ? 'iTerm' : 'Antigravity';
+                  const fallbackPath = isIde
+                    ? '/Applications/Antigravity IDE.app'
+                    : isCli
+                      ? 'Terminal'
+                      : '/Applications/Antigravity.app';
+
+                  childProcess.exec(`open -a "${appName}"`, (err) => {
+                    if (err) {
+                      childProcess.exec(`open -a "${fallbackPath}"`);
+                    }
+                  });
+                } else if (process.platform === 'win32') {
+                  const isIde = targetAgent.jsonlFile.includes('antigravity-ide');
+                  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+                  const idePath = path.join(localAppData, 'Programs', 'antigravity-ide', 'Antigravity IDE.exe');
+                  const appPath = path.join(localAppData, 'Programs', 'antigravity', 'Antigravity.exe');
+                  const exePath = isIde ? idePath : appPath;
+
+                  if (fs.existsSync(exePath)) {
+                    childProcess.exec(`start "" "${exePath}"`);
+                  } else {
+                    const antigravityPath = path.join(os.homedir(), '.gemini', 'antigravity');
+                    if (fs.existsSync(antigravityPath)) {
+                      vscode.env.openExternal(vscode.Uri.file(antigravityPath));
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -220,15 +312,17 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         this.runtime.hooksEnabled.current = enabled;
         if (enabled) {
           const serverConfig = this.pixelAgentsServer?.getConfig();
-          void claudeProvider.installHooks(
+          void provider.installHooks(
             serverConfig ? `http://127.0.0.1:${serverConfig.port}` : '',
             serverConfig?.token ?? '',
           );
-          copyHookScript(this.context.extensionPath);
-          console.log('[Pixel Agents] Hooks enabled by user');
+          if (provider.id === 'claude') {
+            copyHookScript(this.context.extensionPath);
+          }
+          console.log(`[Pixel Agents] Hooks enabled for ${provider.displayName}`);
         } else {
-          void claudeProvider.uninstallHooks();
-          console.log('[Pixel Agents] Hooks disabled by user');
+          void provider.uninstallHooks();
+          console.log(`[Pixel Agents] Hooks disabled for ${provider.displayName}`);
         }
       } else if (message.type === 'setHooksInfoShown') {
         this.adapter.setSetting(GLOBAL_KEY_HOOKS_INFO_SHOWN, true);
@@ -246,7 +340,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           // Remove all external agents not from the current workspace folders
           const workspaceDirs = new Set<string>();
           for (const folder of vscode.workspace.workspaceFolders ?? []) {
-            const dir = getProjectDirPath(folder.uri.fsPath);
+            const dir = getProjectDirPath(provider, folder.uri.fsPath);
             if (dir) workspaceDirs.add(dir);
           }
           const toRemove: number[] = [];
@@ -271,8 +365,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         // from the first frame.
         this.webview?.postMessage({
           type: 'providerCapabilities',
-          readingTools: [...claudeProvider.readingTools],
-          subagentToolNames: [...claudeProvider.subagentToolNames],
+          readingTools: [...provider.readingTools],
+          subagentToolNames: [...provider.subagentToolNames],
         });
         restoreAgents(
           this.adapter,
@@ -310,6 +404,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
             .get<boolean>(CONFIG_KEY_AUTO_SHOW_PANEL, false);
           const prevAgentIds = new Set(this.store.keys());
           await launchNewTerminal(
+            provider,
             this.store.nextAgentId,
             this.store.nextTerminalIndex,
             this.store,
@@ -353,6 +448,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         this.runtime.watchAllSessions.current = watchAllSessions;
         const hooksEnabled = this.adapter.getSetting<boolean>(GLOBAL_KEY_HOOKS_ENABLED, true);
         const hooksInfoShown = this.adapter.getSetting<boolean>(GLOBAL_KEY_HOOKS_INFO_SHOWN, false);
+        const defaultProvider = vscode.env.appName.toLowerCase().includes('antigravity')
+          ? 'antigravity'
+          : 'claude';
+        const providerId = this.adapter.getSetting<string>(GLOBAL_KEY_PROVIDER, defaultProvider);
+        const locale = this.adapter.getSetting<string>('pixel-agents.locale', 'en');
         const config = readConfig();
         this.webview?.postMessage({
           type: 'settingsLoaded',
@@ -363,6 +463,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           alwaysShowLabels,
           hooksEnabled,
           hooksInfoShown,
+          providerId,
+          locale,
           externalAssetDirectories: config.externalAssetDirectories,
         });
 
@@ -376,7 +478,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         }
 
         // Ensure project scan runs even with no restored agents (to adopt external terminals)
-        const projectDir = getProjectDirPath();
+        const projectDir = getProjectDirPath(provider);
         const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         console.log(`[Pixel Agents] Debug: Platform: ${process.platform}, arch: ${process.arch}`);
         console.log('[Extension] workspaceRoot:', workspaceRoot);
@@ -390,7 +492,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         // so agents running in any workspace folder are discovered
         if (wsFolders && wsFolders.length > 1) {
           for (const folder of wsFolders) {
-            const folderProjectDir = getProjectDirPath(folder.uri.fsPath);
+            const folderProjectDir = getProjectDirPath(provider, folder.uri.fsPath);
             if (folderProjectDir && folderProjectDir !== projectDir) {
               console.log(`[Pixel Agents] Registering additional project dir: ${folderProjectDir}`);
               this.runtime.startProjectScan(folderProjectDir);
@@ -443,6 +545,15 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
                 `[Extension] ${charSprites.characters.length} character sprites loaded, sending to webview`,
               );
               sendCharacterSpritesToWebview(this.webview, charSprites);
+            }
+
+            // Load pet sprites
+            const petSprites = await this.loadAllPetSprites();
+            if (petSprites && this.webview) {
+              console.log(
+                `[Extension] ${petSprites.characters.length} pet sprites loaded, sending to webview`,
+              );
+              sendPetSpritesToWebview(this.webview, petSprites);
             }
 
             // Load floor tiles
@@ -503,10 +614,59 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           });
         }
         this.webview?.postMessage({ type: 'agentDiagnostics', agents: diagnostics });
+      } else if (message.type === 'setProvider') {
+        const newProviderId = message.providerId as string;
+        console.log(`[Pixel Agents] Switching provider to: ${newProviderId}`);
+        this.adapter.setSetting(GLOBAL_KEY_PROVIDER, newProviderId);
+
+        const newProvider = this.getActiveProvider();
+        // Update runtime with new provider
+        this.runtime.setProvider(newProvider);
+
+        // Update webview with new capabilities
+        this.webview?.postMessage({
+          type: 'providerCapabilities',
+          readingTools: [...newProvider.readingTools],
+          subagentToolNames: [...newProvider.subagentToolNames],
+        });
+
+        // Notify user
+        vscode.window.showInformationMessage(
+          `Pixel Agents: Switched to ${newProvider.displayName} provider.`,
+        );
+      } else if (message.type === 'setLocale') {
+        const newLocale = message.locale as string;
+        console.log(`[Pixel Agents] Switching locale to: ${newLocale}`);
+        this.adapter.setSetting('pixel-agents.locale', newLocale);
       } else if (message.type === 'openSessionsFolder') {
-        const projectDir = getProjectDirPath();
+        const projectDir = getProjectDirPath(this.getActiveProvider());
         if (projectDir && fs.existsSync(projectDir)) {
           vscode.env.openExternal(vscode.Uri.file(projectDir));
+        }
+      } else if (message.type === 'openAntigravityApp') {
+        if (process.platform === 'darwin') {
+          childProcess.exec('open -a Antigravity', (err) => {
+            if (err) {
+              childProcess.exec('open -a "/Applications/Antigravity.app"');
+            }
+          });
+        } else if (process.platform === 'win32') {
+          const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+          const appPath = path.join(localAppData, 'Programs', 'antigravity', 'Antigravity.exe');
+          if (fs.existsSync(appPath)) {
+            childProcess.exec(`start "" "${appPath}"`);
+          } else {
+            const antigravityPath = path.join(os.homedir(), '.gemini', 'antigravity');
+            if (fs.existsSync(antigravityPath)) {
+              vscode.env.openExternal(vscode.Uri.file(antigravityPath));
+            }
+          }
+        } else {
+          // Fallback for other platforms to open the data folder
+          const antigravityPath = path.join(os.homedir(), '.gemini', 'antigravity');
+          if (fs.existsSync(antigravityPath)) {
+            vscode.env.openExternal(vscode.Uri.file(antigravityPath));
+          }
         }
       } else if (message.type === 'exportLayout') {
         const layout = readLayoutFromFile();
@@ -669,6 +829,23 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
       }
     }
     return chars;
+  }
+
+  private async loadAllPetSprites(): Promise<LoadedCharacterSprites | null> {
+    if (!this.assetsRoot) return null;
+    let pets = await loadPetSprites(this.assetsRoot);
+    const config = readConfig();
+    for (const extraDir of config.externalAssetDirectories) {
+      console.log('[Extension] Loading external pet sprites from:', extraDir);
+      // Try to load external pets just like external characters, assuming they are in an assets/pets folder.
+      // But loadExternalCharacterSprites currently hardcodes assets/characters/.
+      // So let's load them by passing the root. Wait, loadPetSprites takes assetsRoot, which is externalAssetDir here!
+      const extra = await loadPetSprites(extraDir);
+      if (extra) {
+        pets = pets ? mergeCharacterSprites(pets, extra) : extra;
+      }
+    }
+    return pets;
   }
 
   private async reloadAndSendFurniture(): Promise<void> {

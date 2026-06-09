@@ -1,0 +1,8 @@
+[
+  {
+    "name": "system-info",
+    "description": "Prints OS, Node version, and system memory",
+    "language": "js",
+    "filepath": "system-info.js"
+  }
+]

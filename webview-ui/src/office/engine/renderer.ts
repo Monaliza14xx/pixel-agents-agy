@@ -39,6 +39,7 @@ import {
   BUBBLE_PERMISSION_SPRITE,
   BUBBLE_WAITING_SPRITE,
   getCharacterSprites,
+  getPetSprites,
 } from '../sprites/spriteData.js';
 import type {
   Character,
@@ -147,7 +148,9 @@ export function renderScene(
 
   // Characters
   for (const ch of characters) {
-    const sprites = getCharacterSprites(ch.palette, ch.hueShift);
+    const sprites = ch.isPet
+      ? getPetSprites(ch.palette, ch.hueShift)
+      : getCharacterSprites(ch.palette, ch.hueShift);
     const spriteData = getCharacterSprite(ch, sprites);
     const cached = getCachedSprite(spriteData, zoom);
     // Sitting offset: shift character down when seated so they visually sit in the chair
@@ -496,6 +499,11 @@ function renderBubbles(
   for (const ch of characters) {
     if (!ch.bubbleType) continue;
 
+    if (ch.bubbleType === 'petTalk') {
+      renderPetTalkBubble(ctx, ch, offsetX, offsetY, zoom);
+      continue;
+    }
+
     const sprite =
       ch.bubbleType === 'permission' ? BUBBLE_PERMISSION_SPRITE : BUBBLE_WAITING_SPRITE;
 
@@ -518,6 +526,143 @@ function renderBubbles(
     ctx.save();
     if (alpha < 1.0) ctx.globalAlpha = alpha;
     ctx.drawImage(cached, bubbleX, bubbleY);
+    ctx.restore();
+  }
+}
+
+/** Draw a cute rounded text speech bubble for the cat's meow */
+function renderPetTalkBubble(
+  ctx: CanvasRenderingContext2D,
+  ch: Character,
+  offsetX: number,
+  offsetY: number,
+  zoom: number,
+): void {
+  const text = ch.petTalkText;
+  if (!text) return;
+
+  // Fade out in last 0.8s
+  const FADE_START = 0.8;
+  const alpha = ch.bubbleTimer < FADE_START ? ch.bubbleTimer / FADE_START : 1.0;
+
+  const fontSize = Math.max(9, Math.round(zoom * 5.5));
+  ctx.save();
+  ctx.font = `bold ${fontSize}px 'Comic Sans MS', 'Chalkboard SE', cursive, sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+
+  const textW = ctx.measureText(text).width;
+  const padX = fontSize * 0.7;
+  const padY = fontSize * 0.55;
+  const bw = textW + padX * 2;
+  const bh = fontSize + padY * 2;
+  const radius = bh * 0.45;
+
+  // Position above cat head
+  const charScreenX = offsetX + ch.x * zoom;
+  const charScreenY = offsetY + ch.y * zoom;
+  const tailH = fontSize * 0.6;
+  const bx = charScreenX - bw / 2;
+  const by = charScreenY - bh - tailH - zoom * 20;
+
+  ctx.globalAlpha = alpha;
+
+  // Bubble background (white rounded rect)
+  ctx.beginPath();
+  ctx.moveTo(bx + radius, by);
+  ctx.lineTo(bx + bw - radius, by);
+  ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + radius);
+  ctx.lineTo(bx + bw, by + bh - radius);
+  ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - radius, by + bh);
+  // Tail pointer (small downward triangle)
+  ctx.lineTo(charScreenX + tailH * 0.5, by + bh);
+  ctx.lineTo(charScreenX, by + bh + tailH);
+  ctx.lineTo(charScreenX - tailH * 0.5, by + bh);
+  ctx.lineTo(bx + radius, by + bh);
+  ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - radius);
+  ctx.lineTo(bx, by + radius);
+  ctx.quadraticCurveTo(bx, by, bx + radius, by);
+  ctx.closePath();
+
+  ctx.fillStyle = '#fffbe6';
+  ctx.fill();
+  ctx.strokeStyle = '#e0b84a';
+  ctx.lineWidth = Math.max(1, zoom * 0.8);
+  ctx.stroke();
+
+  // Text
+  ctx.fillStyle = '#5a3b00';
+  ctx.fillText(text, charScreenX, by + bh / 2);
+
+  ctx.restore();
+}
+
+function renderCharacterLabels(
+  ctx: CanvasRenderingContext2D,
+  characters: Character[],
+  offsetX: number,
+  offsetY: number,
+  zoom: number,
+): void {
+  const topLevelIds = characters.filter((c) => !c.isSubagent && !c.isPet).map((c) => c.id);
+  const managerId = topLevelIds.length > 0 ? Math.min(...topLevelIds) : -1;
+
+  for (const ch of characters) {
+    if (ch.isPet) continue;
+
+    let defaultLabel = ch.isSubagent ? 'Sub-agent' : (ch.id === managerId ? 'Manager' : `Agent ${ch.id}`);
+    let label = ch.customName || ch.agentName || defaultLabel;
+    if (ch.teamName) {
+      label = `${ch.teamName}: ${label}`;
+    }
+
+    const fontSize = Math.max(9, Math.round(zoom * 5.0));
+    ctx.save();
+    ctx.font = `${fontSize}px sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+
+    const textW = ctx.measureText(label).width;
+    const padX = fontSize * 0.5;
+    const padY = fontSize * 0.3;
+    const dotRadius = fontSize * 0.25;
+    const dotGap = fontSize * 0.3;
+    const extraW = ch.isActive ? dotRadius * 2 + dotGap : 0;
+    
+    const bw = textW + extraW + padX * 2;
+    const bh = fontSize + padY * 2;
+    const radius = Math.min(4, bh / 2);
+
+    const sittingOffset = ch.state === CharacterState.TYPE ? CHARACTER_SITTING_OFFSET_PX : 0;
+    const labelX = Math.round(offsetX + ch.x * zoom);
+    const labelY = Math.round(offsetY + (ch.y + sittingOffset) * zoom + zoom * 2 + bh / 2);
+
+    const bx = labelX - bw / 2;
+    const by = labelY - bh / 2;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, radius);
+    ctx.fill();
+
+    if (ch.isActive) {
+      const startX = bx + padX;
+      // Draw active green dot
+      ctx.fillStyle = '#10b981'; // Tailwind emerald-500
+      ctx.beginPath();
+      ctx.arc(startX + dotRadius, labelY, dotRadius, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Draw text shifted right
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'left';
+      ctx.fillText(label, startX + dotRadius * 2 + dotGap, labelY);
+    } else {
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.fillText(label, labelX, labelY);
+    }
+
     ctx.restore();
   }
 }
@@ -624,6 +769,9 @@ export function renderFrame(
 
   // Speech bubbles (always on top of characters)
   renderBubbles(ctx, characters, offsetX, offsetY, zoom);
+
+  // Character labels
+  renderCharacterLabels(ctx, characters, offsetX, offsetY, zoom);
 
   // Editor overlays
   if (editor) {

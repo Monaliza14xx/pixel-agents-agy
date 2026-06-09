@@ -1,0 +1,116 @@
+# Antigravity Rules for Pixel Agents
+
+Always follow these instructions and constraints when working on the `pixel-agents` codebase.
+
+---
+
+## Agent System Posture
+
+- **Planning Mode**: Before starting any non-trivial changes, compile a research phase, create/update `implementation_plan.md`, obtain user approval, track progress in `task.md`, and document outcomes in `walkthrough.md`.
+- **File Links**: Always output clickable file links for files, classes, interfaces, types, functions, and symbols using the markdown link syntax with the `file://` scheme (e.g., `[basename](file:///absolute/path/to/file)`).
+- **Conciseness**: Keep replies and explanations brief. Do not summarize modified artifacts in messages unless there are open decisions to resolve.
+
+---
+
+## Project Structure & Architecture
+
+`pixel-agents` is a VS Code extension that renders a virtual pixel art office where AI agents (running in terminal sessions) appear as animated characters.
+
+- [adapters/vscode/](file:///Users/monaliza/Documents/ml-projects/pixel-agents/adapters/vscode) — Extension backend host wrapper using VS Code API.
+- [core/src/](file:///Users/monaliza/Documents/ml-projects/pixel-agents/core/src) — Reusable, platform-agnostic business logic.
+- [server/src/](file:///Users/monaliza/Documents/ml-projects/pixel-agents/server/src) — Independent Fastify HTTP/WebSocket server handling Claude Code hook events.
+- [webview-ui/src/](file:///Users/monaliza/Documents/ml-projects/pixel-agents/webview-ui/src) — Frontend user interface built on React 19, TypeScript, Vite, and HTML5 Canvas.
+- [scripts/](file:///Users/monaliza/Documents/ml-projects/pixel-agents/scripts) — Build scripts and visual assets extraction toolsets.
+
+---
+
+## Core Commands
+
+### Development Setup & Build
+
+Always install dependencies across the monorepo root, webview, and server directories:
+
+```bash
+# Clean install for all folders
+npm install && cd webview-ui && npm install && cd ../server && npm install && cd ..
+
+# Compile all components (AsyncAPI, Types, Lint, Esbuild, Webview Build)
+npm run build
+
+# Fast incremental rebuild (compiles extension and types on change)
+npm run watch
+```
+
+### Running Tests
+
+Ensure all changes pass the full test suite before concluding a task:
+
+```bash
+# Run all unit/integration tests
+npm test
+
+# Run webview asset integration tests
+npm run test:webview
+
+# Run HTTP server Vitest suite
+npm run test:server
+
+# Run Playwright E2E tests in a real VS Code environment
+npm run e2e
+```
+
+### Formatting & Linting
+
+Fix all formatting and linting rules prior to committing:
+
+```bash
+# Run Prettier format check
+npm run format:check
+
+# Format files
+npm run format
+
+# Run ESLint check
+npm run lint
+
+# Automatically resolve fixable lint errors
+npm run lint:fix
+```
+
+---
+
+## Coding Constraints & Guidelines
+
+### TypeScript Rules
+
+- **No Enums**: Do not use the `enum` keyword (`erasableSyntaxOnly` constraint). Define configuration and constants as `as const` objects instead.
+- **Explicit Type Imports**: Use `import type` when importing types/interfaces only (enforced by `verbatimModuleSyntax`).
+- **No Unused Code**: Clean up unused imports, variables, and arguments (`noUnusedLocals` and `noUnusedParameters` are strict).
+
+### Centralized Constants
+
+- Never add magic numbers or strings directly to logic files.
+- **Extension Backend**: Place backend-specific values in [src/constants.ts](file:///Users/monaliza/Documents/ml-projects/pixel-agents/adapters/vscode/constants.ts).
+- **Webview UI**: Place frontend numbers, strings, physics, and canvas rules in [webview-ui/src/constants.ts](file:///Users/monaliza/Documents/ml-projects/pixel-agents/webview-ui/src/constants.ts).
+- **Webview Styling**: Define variables and themes in the `:root` block of [index.css](file:///Users/monaliza/Documents/ml-projects/pixel-agents/webview-ui/src/index.css) using `--pixel-*` custom properties.
+
+### Canvas Game Loop Rules
+
+- **Imperative rendering**: Do not use React state to drive the game loop or updates on [OfficeCanvas.tsx](file:///Users/monaliza/Documents/ml-projects/pixel-agents/webview-ui/src/office/components/OfficeCanvas.tsx). Store positions, frames, layouts, pathfinding maps, and velocities in the imperative `OfficeState` class instance.
+- **Pixel-Perfect Zoom**: The camera zoom must always be an integer device-pixels-per-sprite-pixel value (between `1x` and `10x`). Avoid standard canvas scaling.
+- **Z-Sorting**: Z-sort entities by their Y coordinate at render-time. 
+  - Standard furniture/characters use `ch.y + TILE_SIZE/2 + 0.5`.
+  - Chairs: Non-back chairs use `zY = (row+1)*TILE_SIZE` (render in front), back-facing chairs use `zY = (row+1)*TILE_SIZE + 1` (chair back renders in front of characters).
+  - Surface items use `zY = max(spriteBottom, deskZY + 0.5)` to overlay on desks.
+
+### File I/O & Persistence
+
+- **Atomic Writes**: When writing user layout/config files, write to a `.tmp` file and rename it atomically (`fs.promises.rename`) to prevent corruption.
+- **Path Sanitization**: Ensure workspace paths are sanitized, removing colons, backslashes, and forward slashes.
+
+### Session & Status Tracking
+
+- **Dual-Mode Tracking**: System defaults to **Hooks mode** (Fastify server receiving events from Claude Code hooks via `~/.pixel-agents/hooks/claude-hook.js`). If hooks are not installed or active, falls back to **Heuristic mode** (polling log transcripts).
+- **Polling Watcher**: Maintain the single-polling approach (500ms intervals) for JSONL file changes. Use partial line buffering to safely carry incomplete or unterminated line reads.
+- **Delaying Tool Completion**: Add a `300ms` delay on `agentToolDone` events to prevent rendering flicker caused by React batching.
+- **Idle Detection**: Turn completion uses either the turn duration event from transcripts (98% of cases) or fallback text-idle timer (`TEXT_IDLE_DELAY_MS = 5000`) for text-only interactions.

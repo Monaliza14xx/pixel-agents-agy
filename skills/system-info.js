@@ -1,0 +1,1 @@
+const os=require('os');console.log('OS Platform: '+os.platform());console.log('Node Version: '+process.version);console.log('Total Memory: '+(os.totalmem()/(1024**3)).toFixed(2)+' GB');

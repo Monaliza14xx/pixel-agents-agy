@@ -181,3 +181,62 @@ export function getCharacterSprites(paletteIndex: number, hueShift = 0): Charact
   spriteCache.set(cacheKey, sprites);
   return sprites;
 }
+
+let loadedPets: LoadedCharacterData[] | null = null;
+const petSpriteCache = new Map<string, CharacterSprites>();
+
+export function setPetTemplates(data: LoadedCharacterData[]): void {
+  loadedPets = data;
+  petSpriteCache.clear();
+}
+
+export function getPetCount(): number {
+  return loadedPets ? loadedPets.length : 0;
+}
+
+export function getPetSprites(paletteIndex: number, hueShift = 0): CharacterSprites {
+  const cacheKey = `${paletteIndex}:${hueShift}`;
+  const cached = petSpriteCache.get(cacheKey);
+  if (cached) return cached;
+
+  let sprites: CharacterSprites;
+
+  if (loadedPets && loadedPets.length > 0) {
+    const char = loadedPets[paletteIndex % loadedPets.length];
+    const d = char.down;
+    const u = char.up;
+    const rt = char.right;
+    const flip = flipSpriteHorizontal;
+
+    sprites = {
+      walk: {
+        [Dir.DOWN]: [d[0], d[1], d[2], d[1]],
+        [Dir.UP]: [u[0], u[1], u[2], u[1]],
+        [Dir.RIGHT]: [rt[0], rt[1], rt[2], rt[1]],
+        [Dir.LEFT]: [flip(rt[0]), flip(rt[1]), flip(rt[2]), flip(rt[1])],
+      },
+      typing: {
+        [Dir.DOWN]: [d[3], d[4]],
+        [Dir.UP]: [u[3], u[4]],
+        [Dir.RIGHT]: [rt[3], rt[4]],
+        [Dir.LEFT]: [flip(rt[3]), flip(rt[4])],
+      },
+      reading: {
+        [Dir.DOWN]: [d[5], d[6]],
+        [Dir.UP]: [u[5], u[6]],
+        [Dir.RIGHT]: [rt[5], rt[6]],
+        [Dir.LEFT]: [flip(rt[5]), flip(rt[6])],
+      },
+    };
+  } else {
+    // Fallback to characters if no pets loaded
+    return getCharacterSprites(paletteIndex, hueShift);
+  }
+
+  if (hueShift !== 0) {
+    sprites = hueShiftSprites(sprites, hueShift);
+  }
+
+  petSpriteCache.set(cacheKey, sprites);
+  return sprites;
+}

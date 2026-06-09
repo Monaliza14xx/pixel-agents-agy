@@ -18,6 +18,26 @@ export const WANDER_MOVES_BEFORE_REST_MAX = 6;
 export const SEAT_REST_MIN_SEC = 120.0;
 export const SEAT_REST_MAX_SEC = 240.0;
 
+// ── Pet Talk (Cat Meow) ──────────────────────────────────────
+/** Duration in seconds the meow bubble stays visible */
+export const PET_TALK_DURATION_SEC = 3.0;
+/** Probability (0–1) that cat will meow each time it stops (arrives at tile) */
+export const PET_TALK_CHANCE = 0.35;
+/** List of things the cat can say */
+export const PET_TALK_PHRASES = [
+  'Meowww~',
+  'Purrr...',
+  'Nyaa!',
+  'Meow?',
+  '*chirps*',
+  'Mrrrow!',
+  'Prrrr...',
+  '...Meow.',
+  'Nya nya!',
+  '*stretches*',
+];
+
+
 // ── Matrix Effect ────────────────────────────────────────────
 export const MATRIX_EFFECT_DURATION_SEC = 0.3;
 export const MATRIX_TRAIL_LENGTH = 6;

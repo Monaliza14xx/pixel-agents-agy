@@ -106,7 +106,7 @@ async function main(): Promise<void> {
 
   // Format + lint --fix the generated file so the committed file passes CI.
   try {
-    execSync(`npx prettier --write ${quote(OUTPUT_PATH)}`, {
+    execSync(`./node_modules/.bin/prettier --write ${quote(OUTPUT_PATH)}`, {
       cwd: REPO_ROOT,
       stdio: 'inherit',
     });
@@ -115,7 +115,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   try {
-    execSync(`npx eslint --fix ${quote(path.relative(REPO_ROOT, OUTPUT_PATH))}`, {
+    execSync(`./node_modules/.bin/eslint --fix ${quote(path.relative(REPO_ROOT, OUTPUT_PATH))}`, {
       cwd: REPO_ROOT,
       stdio: 'inherit',
     });

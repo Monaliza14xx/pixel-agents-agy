@@ -176,6 +176,79 @@ export class AgentRuntime {
     });
   }
 
+  /** Update the active provider and re-wire dependencies. */
+  setProvider(provider: HookProvider): void {
+    setHookProvider(provider);
+    setFileWatcherHookProvider(provider);
+    if (provider.team) {
+      setTeamProvider(provider.team);
+    }
+    this.hookEventHandler.setProvider(provider);
+  }
+
+  /** Start all scanning processes for a workspace. */
+  startScanning(workspacePath: string): void {
+    const provider = this.hookEventHandler.getProvider();
+    const dirs = provider.getSessionDirs?.(workspacePath) ?? [];
+    for (const dir of dirs) {
+      console.log(`[Pixel Agents] Runtime: starting scan for ${provider.displayName} in ${dir}`);
+      this.startProjectScan(dir);
+      this.startExternalScanning(dir);
+    }
+    this.startStaleCheck();
+  }
+
+  /** Pre-adopt a session that is about to be started, ensuring the character appears immediately. */
+  preAdoptSession(sessionId: string, projectDir: string, folderName?: string): void {
+    const provider = this.hookEventHandler.getProvider();
+    const expectedFile =
+      provider.getSessionFile?.(sessionId, projectDir) ??
+      path.join(projectDir, `${sessionId}.jsonl`);
+    this.knownJsonlFiles.add(expectedFile);
+
+    const id = this.store.nextAgentId.current++;
+    const agent: AgentState = {
+      id,
+      sessionId,
+      terminalRef: undefined,
+      isExternal: true,
+      projectDir,
+      jsonlFile: expectedFile,
+      fileOffset: 0,
+      lineBuffer: '',
+      activeToolIds: new Set(),
+      activeToolStatuses: new Map(),
+      activeToolNames: new Map(),
+      activeSubagentToolIds: new Map(),
+      activeSubagentToolNames: new Map(),
+      backgroundAgentToolIds: new Set(),
+      isWaiting: false,
+      permissionSent: false,
+      hadToolsInTurn: false,
+      hookDelivered: false,
+      lastDataAt: Date.now(),
+      linesProcessed: 0,
+      seenUnknownRecordTypes: new Set(),
+      folderName,
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+
+    this.store.set(id, agent);
+    this.store.persist();
+    this.registerAgent(sessionId, id);
+
+    startFileWatching(
+      id,
+      expectedFile,
+      this.store,
+      this.fileWatchers,
+      this.pollingTimers,
+      this.waitingTimers,
+      this.permissionTimers,
+    );
+  }
+
   /** Register adapter-specific lifecycle callbacks. */
   setLifecycleCallbacks(callbacks: RuntimeLifecycleCallbacks): void {
     this.lifecycleCallbacks = callbacks;

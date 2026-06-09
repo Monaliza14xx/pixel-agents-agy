@@ -1,3 +1,7 @@
+if (!globalThis.structuredClone) {
+  globalThis.structuredClone = (obj) => JSON.parse(JSON.stringify(obj));
+}
+
 import typescriptEslint from 'typescript-eslint';
 import eslintConfigPrettier from 'eslint-config-prettier';
 import simpleImportSort from 'eslint-plugin-simple-import-sort';

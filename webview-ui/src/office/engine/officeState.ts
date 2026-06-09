@@ -487,6 +487,29 @@ export class OfficeState {
     return id;
   }
 
+  /** Add a pet character that wanders the office. */
+  addPet(id: number, palette: number): void {
+    if (this.characters.has(id)) return;
+
+    // No seats — spawn at random walkable tile
+    const spawn =
+      this.walkableTiles.length > 0
+        ? this.walkableTiles[Math.floor(Math.random() * this.walkableTiles.length)]
+        : { col: 1, row: 1 };
+
+    const ch = createCharacter(id, palette, null, null, 0);
+    ch.x = spawn.col * TILE_SIZE + TILE_SIZE / 2;
+    ch.y = spawn.row * TILE_SIZE + TILE_SIZE / 2;
+    ch.tileCol = spawn.col;
+    ch.tileRow = spawn.row;
+    ch.isPet = true;
+    ch.state = CharacterState.IDLE;
+    ch.matrixEffect = 'spawn';
+    ch.matrixEffectTimer = 0;
+    ch.matrixEffectSeeds = matrixEffectSeeds();
+    this.characters.set(id, ch);
+  }
+
   /** Remove a specific sub-agent character and free its seat */
   removeSubagent(parentAgentId: number, parentToolId: string): void {
     const key = `${parentAgentId}:${parentToolId}`;
@@ -571,6 +594,11 @@ export class OfficeState {
       }
       this.rebuildFurnitureInstances();
     }
+  }
+
+  setCustomName(id: number, name: string): void {
+    const ch = this.characters.get(id);
+    if (ch) ch.customName = name;
   }
 
   /** Rebuild furniture instances with auto-state applied (active agents turn electronics ON) */

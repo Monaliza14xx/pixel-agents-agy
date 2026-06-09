@@ -74,6 +74,8 @@ function App() {
     hooksEnabled,
     setHooksEnabled,
     hooksInfoShown,
+    providerId,
+    setProviderId,
   } = useExtensionMessages(getOfficeState, editor.setLastSavedLayout, isEditDirty);
 
   // Show migration notice once layout reset is detected
@@ -250,6 +252,10 @@ function App() {
             zoom={editor.zoom}
             panRef={editor.panRef}
             onCloseAgent={handleCloseAgent}
+            onRenameAgent={(id, name) => {
+              officeState.setCustomName(id, name);
+              transport.send({ type: 'setAgentCustomName', id, name });
+            }}
             alwaysShowOverlay={alwaysShowOverlay}
           />
         </>
@@ -329,6 +335,7 @@ function App() {
         isSettingsOpen={isSettingsOpen}
         onToggleSettings={() => setIsSettingsOpen((v) => !v)}
         workspaceFolders={workspaceFolders}
+        providerId={providerId}
       />
 
       <VersionIndicator
@@ -364,6 +371,8 @@ function App() {
           setHooksEnabled(newVal);
           transport.send({ type: 'setHooksEnabled', enabled: newVal });
         }}
+        providerId={providerId}
+        onChangeProvider={setProviderId}
       />
 
       {showMigrationNotice && (

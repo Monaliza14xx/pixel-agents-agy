@@ -3,6 +3,8 @@
 out/**
 **/node_modules/**
 adapters/**
+server/**
+core/**
 webview-ui/**
 scripts/**
 sprites-export/**
@@ -19,3 +21,13 @@ esbuild.js
 **/.vscode-test.*
 CLAUDE.md
 **/*.jsonl
+venv/**
+.husky/**
+e2e/**
+*.py
+eslint-rules/**
+.gitleaks.toml
+.editorconfig
+.prettierrc.json
+.prettierignore
+.gitattributes

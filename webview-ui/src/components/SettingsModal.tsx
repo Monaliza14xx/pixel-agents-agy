@@ -19,6 +19,8 @@ interface SettingsModalProps {
   onToggleWatchAllSessions: () => void;
   hooksEnabled: boolean;
   onToggleHooksEnabled: () => void;
+  providerId: string;
+  onChangeProvider: (id: string) => void;
 }
 
 export function SettingsModal({
@@ -33,11 +35,57 @@ export function SettingsModal({
   onToggleWatchAllSessions,
   hooksEnabled,
   onToggleHooksEnabled,
+  providerId,
+  onChangeProvider,
 }: SettingsModalProps) {
   const [soundLocal, setSoundLocal] = useState(isSoundEnabled);
+  const [stagedProvider, setStagedProvider] = useState<string | null>(null);
+
+  const activeProvider = stagedProvider ?? providerId;
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Settings">
+      {/* ── Agent Provider ─────────────────────────────── */}
+      <div className="px-10 py-4 flex flex-col gap-2">
+        <label className="text-xs text-text-muted uppercase tracking-wider font-semibold">
+          Agent Provider
+        </label>
+        <div className="flex gap-2">
+          <Button
+            variant={activeProvider === 'claude' ? 'default' : 'ghost'}
+            size="sm"
+            onClick={() => setStagedProvider('claude')}
+            className="flex-1"
+          >
+            Claude
+          </Button>
+          <Button
+            variant={activeProvider === 'antigravity' ? 'default' : 'ghost'}
+            size="sm"
+            onClick={() => setStagedProvider('antigravity')}
+            className="flex-1"
+          >
+            Antigravity
+          </Button>
+        </div>
+        {stagedProvider && stagedProvider !== providerId && (
+          <div className="mt-2 flex flex-col gap-2">
+            <p className="text-xs text-warning leading-tight">
+              Switching provider will reset all running agent sessions.
+            </p>
+            <Button
+              variant="accent"
+              size="sm"
+              onClick={() => {
+                onChangeProvider(stagedProvider);
+                setStagedProvider(null);
+              }}
+            >
+              Switch to {stagedProvider === 'antigravity' ? 'Antigravity' : 'Claude'}
+            </Button>
+          </div>
+        )}
+      </div>
       <MenuItem
         onClick={() => {
           transport.send({ type: 'openSessionsFolder' });
@@ -46,6 +94,16 @@ export function SettingsModal({
       >
         Open Sessions Folder
       </MenuItem>
+      {activeProvider === 'antigravity' && (
+        <MenuItem
+          onClick={() => {
+            transport.send({ type: 'openAntigravityApp' });
+            onClose();
+          }}
+        >
+          Open Antigravity
+        </MenuItem>
+      )}
       <MenuItem
         onClick={() => {
           transport.send({ type: 'exportLayout' });

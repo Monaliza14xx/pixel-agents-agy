@@ -1,4 +1,7 @@
 import {
+  PET_TALK_CHANCE,
+  PET_TALK_DURATION_SEC,
+  PET_TALK_PHRASES,
   SEAT_REST_MAX_SEC,
   SEAT_REST_MIN_SEC,
   TYPE_FRAME_DURATION_SEC,
@@ -77,6 +80,7 @@ export function createCharacter(
     seatId,
     bubbleType: null,
     bubbleTimer: 0,
+    petTalkText: '',
     seatTimer: 0,
     isSubagent: false,
     parentAgentId: null,
@@ -85,6 +89,7 @@ export function createCharacter(
     matrixEffectSeeds: [],
     inputTokens: 0,
     outputTokens: 0,
+    isPet: false,
   };
 }
 
@@ -97,6 +102,92 @@ export function updateCharacter(
   blockedTiles: Set<string>,
 ): void {
   ch.frameTimer += dt;
+
+  if (ch.isPet) {
+    switch (ch.state) {
+      case CharacterState.TYPE:
+        ch.state = CharacterState.IDLE;
+        ch.frame = 0;
+        ch.frameTimer = 0;
+        ch.wanderTimer = randomRange(WANDER_PAUSE_MIN_SEC, WANDER_PAUSE_MAX_SEC);
+        break;
+      case CharacterState.IDLE:
+        ch.frame = 0;
+        // Count down petTalk bubble
+        if (ch.bubbleType === 'petTalk') {
+          ch.bubbleTimer -= dt;
+          if (ch.bubbleTimer <= 0) {
+            ch.bubbleType = null;
+            ch.bubbleTimer = 0;
+            ch.petTalkText = '';
+          }
+        }
+        ch.wanderTimer -= dt;
+        if (ch.wanderTimer <= 0) {
+          if (walkableTiles.length > 0) {
+            const target = walkableTiles[Math.floor(Math.random() * walkableTiles.length)];
+            const path = findPath(
+              ch.tileCol,
+              ch.tileRow,
+              target.col,
+              target.row,
+              tileMap,
+              blockedTiles,
+            );
+            if (path.length > 0) {
+              ch.path = path;
+              ch.moveProgress = 0;
+              ch.state = CharacterState.WALK;
+              ch.frame = 0;
+              ch.frameTimer = 0;
+            }
+          }
+          ch.wanderTimer = randomRange(WANDER_PAUSE_MIN_SEC, WANDER_PAUSE_MAX_SEC);
+        }
+        break;
+      case CharacterState.WALK: {
+        if (ch.frameTimer >= WALK_FRAME_DURATION_SEC) {
+          ch.frameTimer -= WALK_FRAME_DURATION_SEC;
+          ch.frame = (ch.frame + 1) % 4;
+        }
+        if (ch.path.length === 0) {
+          const center = tileCenter(ch.tileCol, ch.tileRow);
+          ch.x = center.x;
+          ch.y = center.y;
+          ch.state = CharacterState.IDLE;
+          ch.wanderTimer = randomRange(WANDER_PAUSE_MIN_SEC, WANDER_PAUSE_MAX_SEC);
+          ch.frame = 0;
+          ch.frameTimer = 0;
+          // 🐱 Cat meow when stopping!
+          if (Math.random() < PET_TALK_CHANCE) {
+            ch.bubbleType = 'petTalk';
+            ch.petTalkText =
+              PET_TALK_PHRASES[Math.floor(Math.random() * PET_TALK_PHRASES.length)];
+            ch.bubbleTimer = PET_TALK_DURATION_SEC;
+          }
+          break;
+        }
+        const nextTile = ch.path[0];
+        ch.dir = directionBetween(ch.tileCol, ch.tileRow, nextTile.col, nextTile.row);
+        ch.moveProgress += (WALK_SPEED_PX_PER_SEC / TILE_SIZE) * dt;
+        const fromCenter = tileCenter(ch.tileCol, ch.tileRow);
+        const toCenter = tileCenter(nextTile.col, nextTile.row);
+        const t = Math.min(ch.moveProgress, 1);
+        ch.x = fromCenter.x + (toCenter.x - fromCenter.x) * t;
+        ch.y = fromCenter.y + (toCenter.y - fromCenter.y) * t;
+        if (ch.moveProgress >= 1) {
+          ch.tileCol = nextTile.col;
+          ch.tileRow = nextTile.row;
+          ch.x = toCenter.x;
+          ch.y = toCenter.y;
+          ch.path.shift();
+          ch.moveProgress = 0;
+        }
+        break;
+      }
+    }
+    return;
+  }
 
   switch (ch.state) {
     case CharacterState.TYPE: {

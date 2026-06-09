@@ -18,6 +18,13 @@ export function activate(context: vscode.ExtensionContext) {
   // Shared file-backed state adapter (VS Code namespace in ~/.pixel-agents/config.json).
   const adapter = new FileStateAdapter({ namespace: 'vscode' });
 
+  // Default to Gemini provider when running in the Antigravity IDE
+  if (vscode.env.appName.toLowerCase().includes('antigravity')) {
+    if (!adapter.getSetting<string>('pixel-agents.provider', '')) {
+      adapter.setSetting('pixel-agents.provider', 'antigravity');
+    }
+  }
+
   // One-time migration from legacy workspaceState/globalState. Idempotent; runs every
   // activate. Warns until all keys are cleared (e.g. if a disk error blocks writes).
   migrateVsCodeState(context, adapter);
@@ -38,6 +45,14 @@ export function activate(context: vscode.ExtensionContext) {
       provider.exportDefaultLayout();
     }),
   );
+
+  // Create and show Status Bar button
+  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusBarItem.command = COMMAND_SHOW_PANEL;
+  statusBarItem.text = '$(layout) Pixel Agents';
+  statusBarItem.tooltip = 'Show Pixel Agents Panel';
+  statusBarItem.show();
+  context.subscriptions.push(statusBarItem);
 
   // Auto-show panel: focus the Pixel Agents panel on startup if the user has
   // opted in via the pixel-agents.autoShowPanel setting.

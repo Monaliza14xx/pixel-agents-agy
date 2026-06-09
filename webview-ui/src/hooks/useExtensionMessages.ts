@@ -5,7 +5,7 @@ import type { OfficeState } from '../office/engine/officeState.js';
 import { setFloorSprites } from '../office/floorTiles.js';
 import { buildDynamicCatalog } from '../office/layout/furnitureCatalog.js';
 import { migrateLayoutColors } from '../office/layout/layoutSerializer.js';
-import { setCharacterTemplates } from '../office/sprites/spriteData.js';
+import { setCharacterTemplates, setPetTemplates } from '../office/sprites/spriteData.js';
 import {
   extractToolName,
   isSubagentToolName,
@@ -70,6 +70,8 @@ interface ExtensionMessageState {
   hooksEnabled: boolean;
   setHooksEnabled: (v: boolean) => void;
   hooksInfoShown: boolean;
+  providerId: string;
+  setProviderId: (v: string) => void;
 }
 
 function saveAgentSeats(os: OfficeState): void {
@@ -107,6 +109,12 @@ export function useExtensionMessages(
   const [alwaysShowLabels, setAlwaysShowLabels] = useState(false);
   const [hooksEnabled, setHooksEnabled] = useState(true);
   const [hooksInfoShown, setHooksInfoShown] = useState(true);
+  const [providerId, setProviderIdState] = useState('claude');
+
+  const setProviderId = (id: string) => {
+    setProviderIdState(id);
+    transport.send({ type: 'setProvider', providerId: id });
+  };
 
   // Track whether initial layout has been loaded (ref to avoid re-render)
   const layoutReadyRef = useRef(false);
@@ -224,16 +232,25 @@ export function useExtensionMessages(
           { palette?: number; hueShift?: number; seatId?: string }
         >;
         const folderNames = (msg.folderNames || {}) as Record<number, string>;
+        const customNames = (msg.customNames || {}) as Record<number, string>;
         // Buffer agents — they'll be added in layoutLoaded after seats are built
+        // If layout is already loaded, add them immediately
         for (const id of incoming) {
           const m = meta[id];
-          pendingAgents.push({
-            id,
-            palette: m?.palette,
-            hueShift: m?.hueShift,
-            seatId: m?.seatId,
-            folderName: folderNames[id],
-          });
+          if (layoutReadyRef.current) {
+            os.addAgent(id, m?.palette, m?.hueShift, m?.seatId, true, folderNames[id]);
+          } else {
+            pendingAgents.push({
+              id,
+              palette: m?.palette,
+              hueShift: m?.hueShift,
+              seatId: m?.seatId,
+              folderName: folderNames[id],
+            });
+          }
+          if (customNames[id]) {
+            os.setCustomName(id, customNames[id]);
+          }
         }
         setAgents((prev) => {
           const ids = new Set(prev);
@@ -419,6 +436,10 @@ export function useExtensionMessages(
             },
           };
         });
+        os.removeSubagent(id, parentToolId);
+        setSubagentCharacters((prev) =>
+          prev.filter((s) => !(s.parentAgentId === id && s.parentToolId === parentToolId)),
+        );
       } else if (msg.type === 'subagentClear') {
         const id = msg.id as number;
         const parentToolId = msg.parentToolId as string;
@@ -447,6 +468,24 @@ export function useExtensionMessages(
         }>;
         console.log(`[Webview] Received ${characters.length} pre-colored character sprites`);
         setCharacterTemplates(characters);
+      } else if (msg.type === 'petSpritesLoaded') {
+        const characters = msg.characters as Array<{
+          down: string[][][];
+          up: string[][][];
+          right: string[][][];
+        }>;
+        console.log(`[Webview] Received ${characters.length} pre-colored pet sprites`);
+        setPetTemplates(characters);
+
+        // Spawn a pet automatically if any sprites loaded
+        if (characters.length > 0 && !os.characters.has(-1)) {
+          // Pet ID -1, Palette 0 (default first pet sprite)
+          os.addPet(-1, 0);
+        }
+        if (characters.length > 1 && !os.characters.has(-2)) {
+          // Pet ID -2, Palette 1 (the new cat pet)
+          os.addPet(-2, 1);
+        }
       } else if (msg.type === 'floorTilesLoaded') {
         const sprites = msg.sprites as string[][][];
         console.log(`[Webview] Received ${sprites.length} floor tile patterns`);
@@ -473,6 +512,10 @@ export function useExtensionMessages(
         if (typeof msg.hooksInfoShown === 'boolean') {
           setHooksInfoShown(msg.hooksInfoShown as boolean);
         }
+        if (typeof msg.providerId === 'string') {
+          setProviderIdState(msg.providerId as string);
+        }
+
         if (Array.isArray(msg.externalAssetDirectories)) {
           setExternalAssetDirectories(msg.externalAssetDirectories as string[]);
         }
@@ -538,5 +581,7 @@ export function useExtensionMessages(
     hooksEnabled,
     setHooksEnabled,
     hooksInfoShown,
+    providerId,
+    setProviderId,
   };
 }

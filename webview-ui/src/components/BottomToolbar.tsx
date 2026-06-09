@@ -13,6 +13,7 @@ interface BottomToolbarProps {
   isSettingsOpen: boolean;
   onToggleSettings: () => void;
   workspaceFolders: WorkspaceFolder[];
+  providerId?: string;
 }
 
 export function BottomToolbar({
@@ -22,30 +23,37 @@ export function BottomToolbar({
   isSettingsOpen,
   onToggleSettings,
   workspaceFolders,
+  providerId,
 }: BottomToolbarProps) {
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false);
   const [isBypassMenuOpen, setIsBypassMenuOpen] = useState(false);
+  const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   const folderPickerRef = useRef<HTMLDivElement>(null);
   const pendingBypassRef = useRef(false);
-  // Close folder picker / bypass menu on outside click
+  const pendingRoleRef = useRef<string | undefined>(undefined);
+
+  // Close folder picker / bypass menu / role menu on outside click
   useEffect(() => {
-    if (!isFolderPickerOpen && !isBypassMenuOpen) return;
+    if (!isFolderPickerOpen && !isBypassMenuOpen && !isRoleMenuOpen) return;
     const handleClick = (e: MouseEvent) => {
       if (folderPickerRef.current && !folderPickerRef.current.contains(e.target as Node)) {
         setIsFolderPickerOpen(false);
         setIsBypassMenuOpen(false);
+        setIsRoleMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
-  }, [isFolderPickerOpen, isBypassMenuOpen]);
+  }, [isFolderPickerOpen, isBypassMenuOpen, isRoleMenuOpen]);
 
   const hasMultipleFolders = workspaceFolders.length > 1;
 
   const handleAgentClick = () => {
     setIsBypassMenuOpen(false);
     pendingBypassRef.current = false;
-    if (hasMultipleFolders) {
+    if (providerId === 'antigravity') {
+      setIsRoleMenuOpen((v) => !v);
+    } else if (hasMultipleFolders) {
       setIsFolderPickerOpen((v) => !v);
     } else {
       onOpenClaude();
@@ -53,33 +61,47 @@ export function BottomToolbar({
   };
 
   const handleAgentHover = () => {
-    if (!isFolderPickerOpen) {
+    if (!isFolderPickerOpen && !isRoleMenuOpen) {
       setIsBypassMenuOpen(true);
     }
   };
 
   const handleAgentLeave = () => {
-    if (!isFolderPickerOpen) {
+    if (!isFolderPickerOpen && !isRoleMenuOpen) {
       setIsBypassMenuOpen(false);
+    }
+  };
+
+  const handleRoleSelect = (role: string) => {
+    setIsRoleMenuOpen(false);
+    pendingRoleRef.current = role === 'default' ? undefined : role;
+    if (hasMultipleFolders) {
+      setIsFolderPickerOpen(true);
+    } else {
+      transport.send({ type: 'launchAgent', role: pendingRoleRef.current });
     }
   };
 
   const handleFolderSelect = (folder: WorkspaceFolder) => {
     setIsFolderPickerOpen(false);
     const bypassPermissions = pendingBypassRef.current;
+    const role = pendingRoleRef.current;
     pendingBypassRef.current = false;
-    transport.send({ type: 'launchAgent', folderPath: folder.path, bypassPermissions });
+    pendingRoleRef.current = undefined;
+    transport.send({ type: 'launchAgent', folderPath: folder.path, bypassPermissions, role });
   };
 
   const handleBypassSelect = (bypassPermissions: boolean) => {
     setIsBypassMenuOpen(false);
     if (hasMultipleFolders) {
       pendingBypassRef.current = bypassPermissions;
+      pendingRoleRef.current = undefined;
       setIsFolderPickerOpen(true);
     } else {
       transport.send({ type: 'launchAgent', bypassPermissions });
     }
   };
+
 
   return (
     <div className="absolute bottom-10 left-10 z-20 flex items-center gap-4 pixel-panel p-4">
@@ -100,11 +122,19 @@ export function BottomToolbar({
                 : 'bg-accent hover:bg-accent-bright'
             }
           >
-            + Agent
+            + {providerId === 'antigravity' ? 'Agy' : 'Claude'}
           </Button>
           <Dropdown isOpen={isBypassMenuOpen}>
             <DropdownItem onClick={() => handleBypassSelect(true)}>
               Skip permissions mode <span className="text-2xs text-warning">⚠</span>
+            </DropdownItem>
+          </Dropdown>
+          <Dropdown isOpen={isRoleMenuOpen} className="min-w-128">
+            <DropdownItem onClick={() => handleRoleSelect('default')} className="text-base">
+              Default Agent
+            </DropdownItem>
+            <DropdownItem onClick={() => handleRoleSelect('coding')} className="text-base">
+              Coding Agent
             </DropdownItem>
           </Dropdown>
           <Dropdown isOpen={isFolderPickerOpen} className="min-w-128">

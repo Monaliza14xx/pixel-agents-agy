@@ -62,16 +62,26 @@ export class PixelAgentsServer {
     staticDir?: string;
     assetCache?: AssetCache;
     onSetHooksEnabled?: SetHooksEnabledSideEffect;
+    onLaunchAgent?: (folderPath?: string, bypassPermissions?: boolean) => void;
+    workspacePath?: string;
   }): Promise<ServerConfig> {
     // Check if another instance already has a server running
     const existing = this.readServerJson();
     if (existing && isProcessRunning(existing.pid)) {
-      this.config = existing;
-      this.ownsServer = false;
+      // Standalone mode: if a specific port is requested, don't reuse if it differs.
+      // In embedded (VS Code) mode, always reuse to prevent port collisions between windows.
+      const isRequestedPortMatch = !options?.port || options.port === existing.port;
+      if (options?.embedded !== false || isRequestedPortMatch) {
+        this.config = existing;
+        this.ownsServer = false;
+        console.log(
+          `[Pixel Agents] Reusing existing server on port ${existing.port} (PID ${existing.pid})`,
+        );
+        return existing;
+      }
       console.log(
-        `[Pixel Agents] Reusing existing server on port ${existing.port} (PID ${existing.pid})`,
+        `[Pixel Agents] Starting new server on requested port ${options.port} (ignoring existing server on ${existing.port})`,
       );
-      return existing;
     }
 
     // Start our own server
@@ -89,6 +99,8 @@ export class PixelAgentsServer {
       assetCache: options?.assetCache,
       onHookEvent: (providerId, event) => this.callback?.(providerId, event),
       onSetHooksEnabled: options?.onSetHooksEnabled,
+      onLaunchAgent: options?.onLaunchAgent,
+      workspacePath: options?.workspacePath,
     });
 
     this.app = app;

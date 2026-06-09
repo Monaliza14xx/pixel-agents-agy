@@ -32,6 +32,7 @@ interface ToolOverlayProps {
   zoom: number;
   panRef: React.RefObject<{ x: number; y: number }>;
   onCloseAgent: (id: number) => void;
+  onRenameAgent?: (id: number, name: string) => void;
   alwaysShowOverlay: boolean;
 }
 
@@ -56,7 +57,7 @@ function getActivityText(
     }
   }
 
-  return 'Idle';
+  return isActive ? 'Thinking...' : 'Idle';
 }
 
 function getFuelColor(ratio: number): string {
@@ -75,9 +76,13 @@ export function ToolOverlay({
   zoom,
   panRef,
   onCloseAgent,
+  onRenameAgent,
   alwaysShowOverlay,
 }: ToolOverlayProps) {
   const [, setTick] = useState(0);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editName, setEditName] = useState('');
+
   useEffect(() => {
     let rafId = 0;
     const tick = () => {
@@ -157,7 +162,7 @@ export function ToolOverlay({
         const teamRoleLabel = ch.isTeamLead ? 'LEAD' : ch.agentName || null;
         const totalTokens = ch.inputTokens + ch.outputTokens;
         const tokenRatio = totalTokens / MAX_CONTEXT_TOKENS;
-        const hasExtraLines = !!(ch.folderName || teamRoleLabel);
+        const hasExtraLines = true; // Always true now since we always show the name line
 
         return (
           <div
@@ -179,17 +184,53 @@ export function ToolOverlay({
                 />
               )}
               <div className="flex flex-col gap-0 overflow-hidden">
-                {teamRoleLabel && (
-                  <span
-                    className="overflow-hidden text-ellipsis block leading-none"
-                    style={{
-                      fontSize: '18px',
-                      color: ch.isTeamLead ? TEAM_LEAD_COLOR : TEAM_ROLE_COLOR,
-                      fontWeight: ch.isTeamLead ? 'bold' : undefined,
+                {editingId === id ? (
+                  <input
+                    autoFocus
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        onRenameAgent?.(id, editName);
+                        setEditingId(null);
+                      }
+                      if (e.key === 'Escape') setEditingId(null);
                     }}
-                  >
-                    {teamRoleLabel}
-                  </span>
+                    onBlur={() => {
+                      onRenameAgent?.(id, editName);
+                      setEditingId(null);
+                    }}
+                    className="bg-transparent border-none outline-none text-text leading-none w-full"
+                    style={{ fontSize: '18px', width: '120px' }}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <div className="flex items-center gap-2 overflow-hidden">
+                    <span
+                      className="overflow-hidden text-ellipsis block leading-none"
+                      style={{
+                        fontSize: '18px',
+                        color: ch.isTeamLead ? TEAM_LEAD_COLOR : TEAM_ROLE_COLOR,
+                        fontWeight: ch.isTeamLead ? 'bold' : undefined,
+                      }}
+                    >
+                      {ch.customName || teamRoleLabel || (isSub ? 'Sub-agent' : `Agent ${id}`)}
+                    </span>
+                    {!isSub && isSelected && (
+                      <span
+                        className="cursor-pointer opacity-50 hover:opacity-100"
+                        style={{ fontSize: '12px' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingId(id);
+                          setEditName(ch.customName || ch.agentName || `Agent ${id}`);
+                        }}
+                        title="Rename"
+                      >
+                        ✏️
+                      </span>
+                    )}
+                  </div>
                 )}
                 <span
                   className="overflow-hidden text-ellipsis block leading-none"

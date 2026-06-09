@@ -96,10 +96,13 @@ function getSessionDirs(workspacePath: string): string[] {
 function buildLaunchCommand(
   sessionId: string,
   cwd: string,
-  opts?: { bypassPermissions?: boolean },
+  opts?: { bypassPermissions?: boolean; role?: string },
 ): { command: string; args: string[]; env?: Record<string, string> } {
   const args = ['--session-id', sessionId];
   if (opts?.bypassPermissions) args.push('--dangerously-skip-permissions');
+  if (opts?.role === 'coding') {
+    args.push('-p', 'You are an expert coding agent. Please help me with coding tasks.');
+  }
   return { command: 'claude', args, env: { PWD: cwd } };
 }
 
@@ -273,6 +276,8 @@ export const claudeProvider: HookProvider = {
   getSessionDirs,
   getAllSessionRoots,
   sessionFilePattern: '*.jsonl',
+  getSessionFile: (sessionId: string, projectDir: string) =>
+    path.join(projectDir, `${sessionId}.jsonl`),
   buildLaunchCommand,
 
   team: claudeTeamProvider,

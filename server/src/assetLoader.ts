@@ -508,6 +508,73 @@ export function sendCharacterSpritesToWebview(
 }
 
 /**
+ * Load pet sprites from assets/pets/
+ * Scans for pet_N.png files.
+ */
+export async function loadPetSprites(assetsRoot: string): Promise<LoadedCharacterSprites | null> {
+  try {
+    const petsDir = path.join(assetsRoot, 'assets', 'pets');
+    if (!fs.existsSync(petsDir)) {
+      return null;
+    }
+
+    const entries = fs.readdirSync(petsDir);
+    const petFiles: { index: number; filename: string }[] = [];
+    for (const entry of entries) {
+      const match = /^pet_(\d+)\.png$/i.exec(entry);
+      if (match) {
+        petFiles.push({ index: parseInt(match[1], 10), filename: entry });
+      }
+    }
+
+    if (petFiles.length === 0) {
+      return null;
+    }
+
+    petFiles.sort((a, b) => a.index - b.index);
+
+    const characters: CharacterDirectionSprites[] = [];
+    for (const { filename } of petFiles) {
+      const filePath = path.join(petsDir, filename);
+      try {
+        const pngBuffer = fs.readFileSync(filePath);
+        characters.push(decodeCharacterPng(pngBuffer));
+      } catch (err) {
+        console.warn(
+          `  [AssetLoader] ⚠️  Error loading pet ${filename}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+
+    if (characters.length === 0) {
+      return null;
+    }
+
+    console.log(`[AssetLoader] ✅ Loaded ${characters.length} pet sprites`);
+    return { characters };
+  } catch (err) {
+    console.error(
+      `[AssetLoader] ❌ Error loading pet sprites: ${err instanceof Error ? err.message : err}`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Send pet sprites to webview
+ */
+export function sendPetSpritesToWebview(
+  webview: vscode.Webview,
+  petSprites: LoadedCharacterSprites,
+): void {
+  webview.postMessage({
+    type: 'petSpritesLoaded',
+    characters: petSprites.characters,
+  });
+  console.log(`📤 Sent ${petSprites.characters.length} pet sprites to webview`);
+}
+
+/**
  * Send loaded assets to webview
  */
 export function sendAssetsToWebview(webview: vscode.Webview, assets: LoadedAssets): void {

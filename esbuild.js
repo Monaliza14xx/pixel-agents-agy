@@ -122,12 +122,11 @@ async function buildCli() {
     sourcemap: !production,
     platform: 'node',
     outfile: 'dist/cli.js',
-    external: ['fastify', '@fastify/websocket', '@fastify/static', '@fastify/cors'],
     define: versionDefine,
     logLevel: 'silent',
   });
   if (!production) {
-    console.log('[build] CLI bundled: dist/cli.mjs');
+    console.log('[build] CLI bundled: dist/cli.js');
   }
 }
 

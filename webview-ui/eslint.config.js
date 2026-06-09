@@ -1,3 +1,7 @@
+if (!globalThis.structuredClone) {
+  globalThis.structuredClone = (obj) => JSON.parse(JSON.stringify(obj));
+}
+
 import js from '@eslint/js';
 import globals from 'globals';
 import reactHooks from 'eslint-plugin-react-hooks';

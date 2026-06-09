@@ -128,12 +128,16 @@ components:
         - $ref: '#/components/schemas/SetHooksEnabled'
         - $ref: '#/components/schemas/SetHooksInfoShown'
         - $ref: '#/components/schemas/SetWatchAllSessions'
+        - $ref: '#/components/schemas/SetProvider'
+        - $ref: '#/components/schemas/SetLocale'
         - $ref: '#/components/schemas/ExportLayout'
         - $ref: '#/components/schemas/ImportLayout'
         - $ref: '#/components/schemas/OpenSessionsFolder'
+        - $ref: '#/components/schemas/OpenAntigravityApp'
         - $ref: '#/components/schemas/AddExternalAssetDirectory'
         - $ref: '#/components/schemas/RemoveExternalAssetDirectory'
         - $ref: '#/components/schemas/RequestDiagnostics'
+        - $ref: '#/components/schemas/SetAgentCustomName'
       discriminator: type
 
     # ── Server message variants ────────────────────────────────────
@@ -515,6 +519,7 @@ components:
         - alwaysShowLabels
         - hooksEnabled
         - hooksInfoShown
+        - providerId
         - externalAssetDirectories
       properties:
         type:
@@ -533,10 +538,36 @@ components:
           type: boolean
         hooksInfoShown:
           type: boolean
+        providerId:
+          type: string
         externalAssetDirectories:
           type: array
           items:
             type: string
+        locale:
+          type: string
+
+    SetProvider:
+      description: Update the active agent provider.
+      type: object
+      additionalProperties: false
+      required: [type, providerId]
+      properties:
+        type:
+          const: setProvider
+        providerId:
+          type: string
+
+    SetLocale:
+      description: Change the UI language locale.
+      type: object
+      additionalProperties: false
+      required: [type, locale]
+      properties:
+        type:
+          const: setLocale
+        locale:
+          type: string
 
     ExternalAssetDirectoriesUpdated:
       description: External asset directory list changed (after add/remove).
@@ -602,6 +633,9 @@ components:
           description: Workspace folder path (for multi-root workspaces).
         bypassPermissions:
           type: boolean
+        role:
+          type: string
+          description: Optional subagent role (e.g. 'coding') when launching via Antigravity.
 
     FocusAgent:
       description: Focus an agent's terminal.
@@ -736,6 +770,15 @@ components:
         type:
           const: openSessionsFolder
 
+    OpenAntigravityApp:
+      description: Open the Antigravity Manager application.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          const: openAntigravityApp
+
     AddExternalAssetDirectory:
       description: Add an external asset directory (host shows a directory picker).
       type: object
@@ -764,6 +807,19 @@ components:
       properties:
         type:
           const: requestDiagnostics
+
+    SetAgentCustomName:
+      description: Set a custom display name for an agent.
+      type: object
+      additionalProperties: false
+      required: [type, id, name]
+      properties:
+        type:
+          const: setAgentCustomName
+        id:
+          type: integer
+        name:
+          type: string
 
     # ── Supporting schemas ─────────────────────────────────────────
 

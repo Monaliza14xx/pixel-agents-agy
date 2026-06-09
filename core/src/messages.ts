@@ -48,12 +48,16 @@ export type ClientMessage =
   | SetHooksEnabled
   | SetHooksInfoShown
   | SetWatchAllSessions
+  | SetProvider
+  | SetLocale
   | ExportLayout
   | ImportLayout
   | OpenSessionsFolder
+  | OpenAntigravityApp
   | AddExternalAssetDirectory
   | RemoveExternalAssetDirectory
-  | RequestDiagnostics;
+  | RequestDiagnostics
+  | SetAgentCustomName;
 
 export interface ProviderCapabilities {
   type: 'providerCapabilities';
@@ -240,7 +244,9 @@ export interface SettingsLoaded {
   alwaysShowLabels: boolean;
   hooksEnabled: boolean;
   hooksInfoShown: boolean;
+  providerId: string;
   externalAssetDirectories: string[];
+  locale?: string;
 }
 
 export interface ExternalAssetDirectoriesUpdated {
@@ -271,6 +277,7 @@ export interface LaunchAgent {
   type: 'launchAgent';
   folderPath?: string;
   bypassPermissions?: boolean;
+  role?: string;
 }
 
 export interface FocusAgent {
@@ -328,6 +335,16 @@ export interface SetWatchAllSessions {
   enabled: boolean;
 }
 
+export interface SetProvider {
+  type: 'setProvider';
+  providerId: string;
+}
+
+export interface SetLocale {
+  type: 'setLocale';
+  locale: string;
+}
+
 export interface ExportLayout {
   type: 'exportLayout';
 }
@@ -338,6 +355,10 @@ export interface ImportLayout {
 
 export interface OpenSessionsFolder {
   type: 'openSessionsFolder';
+}
+
+export interface OpenAntigravityApp {
+  type: 'openAntigravityApp';
 }
 
 export interface AddExternalAssetDirectory {
@@ -351,4 +372,10 @@ export interface RemoveExternalAssetDirectory {
 
 export interface RequestDiagnostics {
   type: 'requestDiagnostics';
+}
+
+export interface SetAgentCustomName {
+  type: 'setAgentCustomName';
+  id: number;
+  name: string;
 }

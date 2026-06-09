@@ -34,6 +34,10 @@ export interface HttpServerOptions {
   onHookEvent?: (providerId: string, event: Record<string, unknown>) => void;
   /** Invoked when setHooksEnabled is toggled via WebSocket. Standalone installs/uninstalls hooks here. */
   onSetHooksEnabled?: SetHooksEnabledSideEffect;
+  /** Support launching into an external terminal (standalone mode). */
+  onLaunchAgent?: (folderPath?: string, bypassPermissions?: boolean) => void;
+  /** Initial workspace path for the CLI. */
+  workspacePath?: string;
 }
 
 /** Result of createHttpServer(). */
@@ -64,7 +68,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Http
     await app.register(fastifyStatic, {
       root: options.staticDir,
       prefix: '/',
+      wildcard: true, // Let static plugin handle the root and wildcard files
     });
+
     // HTML5 history fallback: serve index.html for unmatched routes
     app.setNotFoundHandler((_req, reply) => {
       reply.sendFile('index.html');
@@ -187,7 +193,9 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
           store,
           runtime: options.runtime,
           cache: options.assetCache ?? null,
+          workspacePath: options.workspacePath,
           onSetHooksEnabled: options.onSetHooksEnabled,
+          onLaunchAgent: options.onLaunchAgent,
         });
       } catch {
         // Malformed JSON, ignore

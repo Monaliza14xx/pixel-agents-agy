@@ -107,13 +107,15 @@ export interface HookProvider {
   getAllSessionRoots?(): string[];
   /** Glob pattern for session files (e.g., '*.jsonl'). */
   readonly sessionFilePattern?: string;
+  /** Get the expected transcript file path for a session ID. */
+  getSessionFile?(sessionId: string, projectDir: string): string;
   /** Parse one line of a transcript file into an AgentEvent. */
   parseTranscriptLine?(line: string): AgentEvent | null;
   /** Build CLI launch command for +Agent button. */
   buildLaunchCommand?(
     sessionId: string,
     cwd: string,
-    opts?: { bypassPermissions?: boolean },
+    opts?: { bypassPermissions?: boolean; role?: string },
   ): {
     command: string;
     args: string[];
