@@ -22,7 +22,6 @@ test-results/
 playwright-report/
 
 # Build artifacts
-*.vsix
 *.map
 
 # Environment files
